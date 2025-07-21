@@ -52,7 +52,7 @@ class ONNXInputData(BaseInputData):
     revision: Optional[str] = None
 
     test_data_url: str
-    ground_truth_url: str
+    target_column: str  # Column name in test_data that contains ground truth values
 
     task_type: str
     task_id: int
@@ -95,8 +95,8 @@ class ONNXValidationModule(BaseValidationModule):
             print(f"Error loading model from {model_repo_id}: {e}")
             raise ValueError(f"Failed to load ONNX model: {e}")
 
-    def _load_data(self, data_url: str) -> np.ndarray:
-        """Load and preprocess CSV data from URL"""
+    def _load_data(self, data_url: str, target_column: str = None) -> tuple:
+        """Load and preprocess CSV data from URL, optionally separating features and target"""
         import requests
         from io import StringIO
 
@@ -110,11 +110,21 @@ class ONNXValidationModule(BaseValidationModule):
             if df.empty:
                 raise ValueError("CSV file is empty")
 
-            return df.values
+            if target_column:
+                # Separate features and target
+                if target_column not in df.columns:
+                    raise ValueError(f"Target column '{target_column}' not found in data")
+                
+                target_values = df[target_column].values
+                feature_values = df.drop(columns=[target_column]).values
+                return feature_values, target_values
+            else:
+                # Return all data as features
+                return df.values, None
 
         except Exception as e:
             print(f"Error loading CSV data: {e}")
-            return None
+            return None, None
 
     def _run_inference(self, input_data: np.ndarray) -> np.ndarray:
         """Run ONNX model inference"""
@@ -230,26 +240,21 @@ class ONNXValidationModule(BaseValidationModule):
         try:
             self._load_model(data.model_repo_id, data.revision)
 
-            test_data = self._load_data(data.test_data_url)
-            ground_truth = self._load_data(data.ground_truth_url)
+            # Load test data and extract features and target
+            test_features, ground_truth = self._load_data(data.test_data_url, data.target_column)
 
-            if test_data is None or ground_truth is None:
+            if test_features is None or ground_truth is None:
                 raise InvalidTimeSeriesDataException(
-                    "Failed to load test data or ground truth"
+                    "Failed to load test data or extract ground truth from target column"
                 )
 
-            if len(test_data) != len(ground_truth):
+            if len(test_features) != len(ground_truth):
                 raise InvalidTimeSeriesDataException(
-                    "Test data and ground truth length mismatch"
+                    "Test features and ground truth length mismatch"
                 )
 
-            predictions = self._run_inference(test_data)
+            predictions = self._run_inference(test_features)
 
-            # print(f"DEBUG: test_data shape: {test_data.shape}")
-            # print(f"DEBUG: ground_truth shape: {ground_truth.shape}")
-            # print(f"DEBUG: predictions shape: {predictions.shape}")
-            # print(f"DEBUG: ground_truth first 3 values: {ground_truth.flatten()[:3]}")
-            # print(f"DEBUG: predictions first 3 values: {predictions.flatten()[:3]}")
             task_data = {
                 "task_type": data.task_type,
                 "required_metrics": data.required_metrics,

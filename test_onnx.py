@@ -18,7 +18,7 @@ from validator.modules.onnx import (
 
 
 def create_test_csv_data():
-    """Create simple test CSV data"""
+    """Create simple test CSV data with target column included"""
 
     np.random.seed(42)
 
@@ -26,15 +26,12 @@ def create_test_csv_data():
         "feature1": np.random.normal(0, 1, 20),
         "feature2": np.random.normal(0, 1, 20),
         "feature3": np.random.normal(0, 1, 20),
+        "target": np.random.normal(0, 0.5, 20),  # Include target in the same dataset
     }
     test_df = pd.DataFrame(test_data)
     test_csv = test_df.to_csv(index=False)
 
-    truth_data = {"target": np.random.normal(0, 0.5, 20)}
-    truth_df = pd.DataFrame(truth_data)
-    truth_csv = truth_df.to_csv(index=False)
-
-    return test_csv, truth_csv
+    return test_csv
 
 
 @patch("validator.validation_runner.FedLedger")
@@ -46,7 +43,7 @@ def test_onnx_validation_works(
 ):
     """Test that ONNX validation can complete successfully"""
 
-    test_csv, truth_csv = create_test_csv_data()
+    test_csv = create_test_csv_data()
 
     # Mock API
     mock_api = MagicMock()
@@ -74,10 +71,7 @@ def test_onnx_validation_works(
     def mock_get_side_effect(url):
         response = MagicMock()
         response.raise_for_status.return_value = None
-        if "test.csv" in url:
-            response.text = test_csv
-        elif "truth.csv" in url:
-            response.text = truth_csv
+        response.text = test_csv  # Same CSV contains both features and target
         return response
 
     mock_requests.side_effect = mock_get_side_effect
@@ -94,7 +88,7 @@ def test_onnx_validation_works(
         model_repo_id="test/model",
         revision="main",
         test_data_url="https://example.com/test.csv",
-        ground_truth_url="https://example.com/truth.csv",
+        target_column="target",
         task_type="forecasting",
         task_id=1,
         required_metrics=[
