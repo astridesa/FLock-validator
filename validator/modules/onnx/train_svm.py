@@ -81,12 +81,19 @@ def train_svm_model(X, y, feature_columns):
     """Train SVM model with preprocessing"""
     print("Training SVM model...")
 
+    if X.shape[0] > 100000:
+        subset_size = 100000
+        indices = np.random.choice(X.shape[0], subset_size, replace=False)
+        X = X.iloc[indices]
+        y = y.iloc[indices]
+        print(f"Using {subset_size} samples for training")
+
     # Scale features
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
     # Train SVM model
-    svm_model = SVR(kernel="rbf", C=100, gamma="scale", epsilon=0.1)
+    svm_model = SVR(kernel="rbf", C=100, gamma="scale", epsilon=0.1, max_iter=10000)
     svm_model.fit(X_scaled, y)
 
     print(f"Training completed on {X.shape[0]} samples")
