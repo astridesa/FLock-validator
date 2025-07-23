@@ -49,6 +49,7 @@ class ONNXInputData(BaseInputData):
     """Input data for ONNX validation"""
 
     model_repo_id: str  # HuggingFace repository ID for the ONNX model
+    model_filename: str  # Name of the ONNX model file
     revision: Optional[str] = None
 
     test_data_url: str
@@ -76,12 +77,14 @@ class ONNXValidationModule(BaseValidationModule):
         self.model = None
         self.data_processor = None
 
-    def _load_model(self, model_repo_id: str, revision: str = None):
+    def _load_model(
+        self, model_repo_id: str, filename: str = "model.onnx", revision: str = None
+    ):
         """Load ONNX model from HuggingFace repository"""
         try:
             model_path = hf_hub_download(
                 repo_id=model_repo_id,
-                filename="model.onnx",
+                filename=filename,  # perhaps this should be configurable
                 revision=revision,
                 cache_dir=self.config.output_dir,
             )
@@ -96,7 +99,7 @@ class ONNXValidationModule(BaseValidationModule):
             raise ValueError(f"Failed to load ONNX model: {e}")
 
     def _load_data(self, data_url: str, target_column: str = None) -> tuple:
-        """Load and preprocess CSV data from URL, optionally separating features and target"""
+        """Load CSV data from URL, optionally separating features and target"""
         import requests
         from io import StringIO
 
@@ -113,8 +116,10 @@ class ONNXValidationModule(BaseValidationModule):
             if target_column:
                 # Separate features and target
                 if target_column not in df.columns:
-                    raise ValueError(f"Target column '{target_column}' not found in data")
-                
+                    raise ValueError(
+                        f"Target column '{target_column}' not found in data"
+                    )
+
                 target_values = df[target_column].values
                 feature_values = df.drop(columns=[target_column]).values
                 return feature_values, target_values
@@ -219,9 +224,6 @@ class ONNXValidationModule(BaseValidationModule):
             else:
                 metrics_dict["directional_accuracy"] = 0.0
 
-        if "forecasting_skill" in requested_metrics:
-            metrics_dict["forecasting_skill"] = 0.0
-
         return metrics_dict
 
     def validate(
@@ -238,10 +240,13 @@ class ONNXValidationModule(BaseValidationModule):
             ONNXMetrics: Computed metrics for the time series model
         """
         try:
-            self._load_model(data.model_repo_id, data.revision)
+            filename = getattr(data, "model_filename", "model.onnx")
+            self._load_model(data.model_repo_id, filename, data.revision)
 
             # Load test data and extract features and target
-            test_features, ground_truth = self._load_data(data.test_data_url, data.target_column)
+            test_features, ground_truth = self._load_data(
+                data.test_data_url, data.target_column
+            )
 
             if test_features is None or ground_truth is None:
                 raise InvalidTimeSeriesDataException(

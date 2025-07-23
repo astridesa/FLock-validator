@@ -166,6 +166,7 @@ def test_onnx_validation_works(mock_requests, mock_fedledger):
             print(f"   - MAPE: {metrics.mape}")
         if hasattr(metrics, "smape"):
             print(f"   - SMAPE: {metrics.smape}")
+
         return True
 
 
