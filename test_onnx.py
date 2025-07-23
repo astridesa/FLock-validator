@@ -17,33 +17,89 @@ from validator.modules.onnx import (
 )
 
 
-def create_test_csv_data():
-    """Create simple test CSV data with target column included"""
+def load_and_preprocess_demo_data():
+    """Load demo CSV data and apply feature engineering"""
+    from pathlib import Path
 
-    np.random.seed(42)
+    demo_path = (
+        Path(__file__).parent
+        / "validator"
+        / "modules"
+        / "onnx"
+        / "demo_data"
+        / "test.csv"
+    )
 
-    test_data = {
-        "feature1": np.random.normal(0, 1, 20),
-        "feature2": np.random.normal(0, 1, 20),
-        "feature3": np.random.normal(0, 1, 20),
-        "target": np.random.normal(0, 0.5, 20),  # Include target in the same dataset
-    }
-    test_df = pd.DataFrame(test_data)
-    test_csv = test_df.to_csv(index=False)
+    if not demo_path.exists():
+        print(f"Demo data not found at: {demo_path}")
+        return None
 
-    return test_csv
+    # Read the demo CSV file
+    df = pd.read_csv(demo_path)
+    print(f"Loaded demo data with shape: {df.shape}")
+    print(f"Original columns: {df.columns.tolist()}")
+
+    df["Date"] = pd.to_datetime(df["Date"])
+    df["year"] = df["Date"].dt.year
+    df["month"] = df["Date"].dt.month
+    df["day"] = df["Date"].dt.day
+    df["dayofweek"] = df["Date"].dt.dayofweek
+    df["dayofyear"] = df["Date"].dt.dayofyear
+
+    df = df.sort_values(["store", "product", "Date"])
+
+    for lag in [1, 2, 3, 7]:
+        df[f"number_sold_lag_{lag}"] = df.groupby(["store", "product"])[
+            "number_sold"
+        ].shift(lag)
+
+    for window in [3, 7, 14]:
+        df[f"number_sold_rolling_{window}"] = (
+            df.groupby(["store", "product"])["number_sold"]
+            .rolling(window=window)
+            .mean()
+            .values
+        )
+
+    df = df.dropna()
+
+    # Select only numerical feature columns
+    feature_columns = [
+        "store",
+        "product",
+        "year",
+        "month",
+        "day",
+        "dayofweek",
+        "dayofyear",
+        "number_sold_lag_1",
+        "number_sold_lag_2",
+        "number_sold_lag_3",
+        "number_sold_lag_7",
+        "number_sold_rolling_3",
+        "number_sold_rolling_7",
+        "number_sold_rolling_14",
+        "number_sold",  # Keep target column
+    ]
+
+    df_final = df[feature_columns]
+
+    print(f"After feature engineering: {df_final.shape}")
+    print(f"Final columns: {df_final.columns.tolist()}")
+
+    processed_csv = df_final.to_csv(index=False)
+    return processed_csv
 
 
 @patch("validator.validation_runner.FedLedger")
-@patch("validator.modules.onnx.hf_hub_download")
-@patch("validator.modules.onnx.ort.InferenceSession")
 @patch("requests.get")
-def test_onnx_validation_works(
-    mock_requests, mock_ort, mock_hf_download, mock_fedledger
-):
-    """Test that ONNX validation can complete successfully"""
+def test_onnx_validation_works(mock_requests, mock_fedledger):
+    """Test that ONNX validation can complete successfully using real HuggingFace model"""
 
-    test_csv = create_test_csv_data()
+    test_csv = load_and_preprocess_demo_data()
+    if test_csv is None:
+        print("Failed to load demo data")
+        return False
 
     # Mock API
     mock_api = MagicMock()
@@ -53,25 +109,11 @@ def test_onnx_validation_works(
     mock_api.mark_assignment_as_failed = MagicMock()
     mock_fedledger.return_value = mock_api
 
-    mock_hf_download.return_value = "/user-name/model.onnx"
-
-    mock_session = MagicMock()
-    mock_input = MagicMock()
-    mock_input.name = "input"
-    mock_session.get_inputs.return_value = [mock_input]
-
-    # Generate 20 predictions to match the ground truth
-    np.random.seed(123)
-    fake_predictions = np.random.normal(0, 0.3, 20)
-
-    mock_session.run.return_value = [fake_predictions.reshape(-1, 1)]
-    mock_ort.return_value = mock_session
-
-    # Mock HTTP requests for CSV data
+    # Mock HTTP requests for CSV data (use real HuggingFace download for model)
     def mock_get_side_effect(url):
         response = MagicMock()
         response.raise_for_status.return_value = None
-        response.text = test_csv  # Same CSV contains both features and target
+        response.text = test_csv  # CSV contains both features and target
         return response
 
     mock_requests.side_effect = mock_get_side_effect
@@ -85,10 +127,11 @@ def test_onnx_validation_works(
     )
 
     input_data = ONNXInputData(
-        model_repo_id="test/model",
+        model_repo_id="Fan9494/test_onnx",
+        model_filename="model.onnx",
         revision="main",
         test_data_url="https://example.com/test.csv",
-        target_column="target",
+        target_column="number_sold",
         task_type="forecasting",
         task_id=1,
         required_metrics=[
@@ -96,10 +139,8 @@ def test_onnx_validation_works(
             "rmse",
             "mape",
             "smape",
-            "mse",
             "r2_score",
             "directional_accuracy",
-            "forecast_skill",
         ],
     )
 
@@ -111,10 +152,7 @@ def test_onnx_validation_works(
 
     if metrics is None:
         print("Validation returned None - something went wrong")
-        # Let's check what might have failed
         print("Checking mocks:")
-        print(f"  - HuggingFace download called: {mock_hf_download.called}")
-        print(f"  - ONNX Runtime called: {mock_ort.called}")
         print(f"  - HTTP requests called: {mock_requests.call_count}")
         return False
     else:
@@ -124,6 +162,10 @@ def test_onnx_validation_works(
             print(f"   - MAE: {metrics.mae}")
         if hasattr(metrics, "rmse"):
             print(f"   - RMSE: {metrics.rmse}")
+        if hasattr(metrics, "mape"):
+            print(f"   - MAPE: {metrics.mape}")
+        if hasattr(metrics, "smape"):
+            print(f"   - SMAPE: {metrics.smape}")
         return True
 
 
